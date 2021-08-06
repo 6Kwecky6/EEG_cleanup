@@ -1,0 +1,9 @@
+Trigger marks start and end of recording.
+
+1. 2min eye open
+2. 2min eye closed
+3. 2min walking on spot
+4. 2min walking up and down (ca. 3m)
+5. 1min stepping sideways/front/back
+6. 1min tilting head right/left/up/down
+7. 30sec movement imagination (walking)
