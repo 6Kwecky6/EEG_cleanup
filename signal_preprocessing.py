@@ -249,11 +249,11 @@ def full_correlation_check(ica_, sources_, raw_, ref_, hmd_, is_filtered):
                                                                                                        i,
                                                                                                        'filtered' if is_filtered else 'unfiltered'))
 # constants
-opts = 'm:n:f'
-long_opts = 'method:fast'
+opts = 'm:n:p'
+long_opts = 'method:plot'
 method_ = 'fastica'
 n_components_ = None
-plot_filter = True
+plot_filter = False
 l_pass = 0.1
 h_pass = 60
 notch = 50
@@ -276,8 +276,8 @@ try:
             method_ = val
         elif arg in '-n': # How many components to run ICA with. If None, look at default description of mne doc for ICA: https://mne.tools/stable/generated/mne.preprocessing.ICA.html
             n_components_ = int(val)
-        elif arg in ('-f', '--fast'): # skips plots
-            plot_filter = False
+        elif arg in ('-p', '--plot'): # Plots step by step
+            plot_filter = True
 except getopt.error as err:
     print(str(err))
 
