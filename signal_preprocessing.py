@@ -48,7 +48,7 @@ def run_ica(eeg_data, n_components, method, plot_filter_):
         show_time_series(ica_sources, 'ICA decomposed series')
     return ica
 
-def create_correlation_table(ica, eeg, acc):
+def create_correlation_table(ica, eeg, acc, unmix=True,threshold_ = None):
     """
     This method will create a correlation matrix between the raw time series and the accelerations.
     Currently only 3 directions (X,Y,Z) and 6 directions (lin_X, lin_Y, lin_Z, ang_X, ang_Y, ang_Z) is allowed.
@@ -58,6 +58,9 @@ def create_correlation_table(ica, eeg, acc):
     Raw object containing eeg data.
     :param acc:
     Raw object containing the acceleration. Must have the shape [n,x] where n is either 3 or 6 and x = eeg length
+    :param unmix:
+    Boolean to tell the function whether or not the function should unmix the eeg data after creating the correlation table.
+    Default: True. If False, the function will only return the correlation table
     :return:
     (correlation_table,eeg_unmixed)
     correlation_table:
@@ -102,10 +105,13 @@ def create_correlation_table(ica, eeg, acc):
         raise ValueError("received incorrect number of accuracy directions. Need 3 or 6")
     corr_matrix = np.array(corr_matrix)
     # Creates the cleaned signal
-    eeg_raw_unmixed = unmix_ica(ica,corr_matrix, eeg)
-    return np.vstack((np.array(acc.ch_names),corr_matrix.T)), eeg_raw_unmixed
+    if unmix:
+        eeg_raw_unmixed = unmix_ica(ica,corr_matrix, eeg,threshold_=threshold_)
+        return np.vstack((np.array(acc.ch_names),corr_matrix.T)), eeg_raw_unmixed
+    else:
+        return corr_matrix
 
-def unmix_ica(ica, corr_matrix, eeg):
+def unmix_ica(ica, corr_matrix, eeg,threshold_ = None):
     """
     Reconstructs the eeg space using the ica object. This method excludes all independent components that are more
     correlated then mean + (2*standard deviation).
@@ -120,15 +126,16 @@ def unmix_ica(ica, corr_matrix, eeg):
     """
     # reconstructtion of electrode space
     corr_matrix = np.absolute(corr_matrix)
-    mean = corr_matrix.mean()
-    std = np.std(corr_matrix)
-    threshold = std * 2 + mean
-    correlated_sources = np.where(np.any(corr_matrix >= threshold, axis=0))[0]
+    if not threshold_:
+        mean = corr_matrix.mean()
+        std = np.std(corr_matrix)
+        threshold_ = std * 2 + mean
+    correlated_sources = np.where(np.any(corr_matrix >= threshold_, axis=0))[0]
     print('With a threshold of {}; components to be removed: {}'.format(threshold, correlated_sources))
     eeg_raw_unmixed = ica.apply(inst=eeg.copy(), exclude=correlated_sources)
     return eeg_raw_unmixed
 
-def split_raw(full_raw, times, init_time):
+def split_raw_event(full_raw, times, init_time):
     """
     This method creates a list of raw objects that are pieces of the original raw object based on the time stamps given
     :param full_raw:
@@ -138,7 +145,7 @@ def split_raw(full_raw, times, init_time):
     :param init_time:
     This is the first timestamp, used to shift the time to start at 0 sek
     :return:
-    List of raw objects that are slices of the original raw objec
+    List of raw objects that are slices of the original raw object
     """
     res = []
     for i,(start, end) in enumerate(zip(*[iter(times)]*2)): ##  Loop that gets every time stamp pairwise
@@ -148,7 +155,21 @@ def split_raw(full_raw, times, init_time):
         res[i]['data'].crop(tmin=start-init_time,tmax=end-init_time)
     return res
 
-def full_correlation_check(ica_, sources_, raw_, ref_, hmd_, is_filtered):
+def split_raw_period(full_raw, period = 1.0):
+    _, times = full_raw[:]
+    last_time = times[-1]
+    i = 0
+    while (i+1)*period<=last_time:
+        res = full_raw.copy()
+        tmin=period*i
+        tmax = period*(i+1)
+        res.crop(tmin=tmin,tmax=tmax)
+        yield {'data':res,
+               'start_time':tmin,
+               'end_time':tmax}
+        i+=1
+
+def full_correlation_check(ica_, sources_, raw_, ref_, hmd_, is_filtered,threshold_ = None):
     """
     This is a function that creates a correlation tables for both vr headset and reference acceleration.
     Finally it saves the correlation tables and plots to a file.
@@ -170,8 +191,8 @@ def full_correlation_check(ica_, sources_, raw_, ref_, hmd_, is_filtered):
     """
 
     # Creating the correlation tables
-    ref_correlation_matrix, eeg_ref_unmixed= create_correlation_table(ica_, raw_['data'], ref_['data'])
-    hmd_acc_correlation_matrix, eeg_hmd_unmixed = create_correlation_table(ica_, raw_['data'], hmd_['data'])
+    ref_correlation_matrix, eeg_ref_unmixed= create_correlation_table(ica_, raw_['data'], ref_['data'],threshold_=threshold)
+    hmd_acc_correlation_matrix, eeg_hmd_unmixed = create_correlation_table(ica_, raw_['data'], hmd_['data'],threshold_=threshold_)
     ica_names = np.concatenate(([0],ica_._ica_names))
     table_body_ref = np.vstack((ica_names,
                             ref_correlation_matrix.T))
@@ -190,6 +211,8 @@ def full_correlation_check(ica_, sources_, raw_, ref_, hmd_, is_filtered):
         writer.writerow(['Start time:', raw_['start_time'], 'End time', raw_['end_time']])
         writer.writerows(table_body_hmd)
         writer.writerow([])
+
+
         '''
         print('REF ACCELERATION\n--------\n'
           'max correlation: {0}\n'
@@ -199,8 +222,9 @@ def full_correlation_check(ica_, sources_, raw_, ref_, hmd_, is_filtered):
           'min correlation {3}'.format(np.amax(ref_correlation_matrix), np.amin(ref_correlation_matrix),
                                        np.amax(hmd_acc_correlation_matrix), np.amin(hmd_acc_correlation_matrix)))
         '''
-
-    # Saves the plots as jpeg
+    # Saves the plots as jpeg. This consumes a lot of memory and must therefore not be used along with periodic split
+    '''  
+    
     unmixed_ref_fig = eeg_ref_unmixed.plot(scalings={'eeg':3e2},
                                            show=False,
                                            show_options=False,
@@ -214,6 +238,8 @@ def full_correlation_check(ica_, sources_, raw_, ref_, hmd_, is_filtered):
                                                    raw_['start_time'],
                                                    raw_['end_time'],
                                                    csv_path_ref))
+    unmixed_ref_fig.clf()
+    del unmixed_ref_fig
 
     unmixed_hmd_fig = eeg_hmd_unmixed.plot(scalings={'eeg': 3e2},
                                            show=False,
@@ -228,6 +254,8 @@ def full_correlation_check(ica_, sources_, raw_, ref_, hmd_, is_filtered):
                                                    raw_['start_time'],
                                                    raw_['end_time'],
                                                    csv_path_hmd))
+    unmixed_hmd_fig.clf()
+    del unmixed_hmd_fig
     source_fig = sources_.plot(scalings={'eeg': 3e2},
                   show=False,
                   show_options=False,
@@ -238,6 +266,8 @@ def full_correlation_check(ica_, sources_, raw_, ref_, hmd_, is_filtered):
                                                                                                raw_['start_time'],
                                                                                                raw_['end_time'],
                                                                                                'filtered' if is_filtered else 'unfiltered'))
+    source_fig.clf()
+    del source_fig
     component_fig = ica_.plot_components(title='ICA composition for {0} data between {1:.2f}s-{2:.2f}s'.format('filtered' if is_filtered else 'unfiltered',
                                                                                                                raw_['start_time'],
                                                                                                                raw_['end_time']),
@@ -248,6 +278,19 @@ def full_correlation_check(ica_, sources_, raw_, ref_, hmd_, is_filtered):
                                                                                                        raw_['end_time'],
                                                                                                        i,
                                                                                                        'filtered' if is_filtered else 'unfiltered'))
+        window.clf()
+    del component_fig
+    '''
+    return eeg_ref_unmixed,eeg_hmd_unmixed
+
+def calculate_threshold(ica, raw, acc):
+    correlation_table = np.absolute(create_correlation_table(ica, raw, acc, unmix=False))
+    mean = correlation_table.mean()
+    std = np.std(correlation_table)
+    new_threshold = (std*2)+mean
+    print('Threshold: {}'.format(new_threshold))
+    return new_threshold
+
 # constants
 opts = 'm:n:p'
 long_opts = 'method:plot'
@@ -372,19 +415,80 @@ print('eeg_referenced size: {0}\nref acc size: {1}'.format(eeg_referenced[0].get
 split_lpass = 1
 split_hpass = 10
 time_stamps = data[0]['time_stamps'][1:-1] # Removing first and last to get the time that matters in stead of the time between press and release button
-raw_list = split_raw(eeg_raw, time_stamps, data[0]['time_stamps'][0])
-ref_acc_list = split_raw(raw_ref_acc, time_stamps, data[0]['time_stamps'][0])
-hmd_acc_list = split_raw(hmd_acc_raw, time_stamps, data[0]['time_stamps'][0])
-print(len(raw_list))
+raw_list = split_raw_event(eeg_raw, time_stamps, data[0]['time_stamps'][0])
+ref_acc_list = split_raw_event(raw_ref_acc, time_stamps, data[0]['time_stamps'][0])
+hmd_acc_list = split_raw_event(hmd_acc_raw, time_stamps, data[0]['time_stamps'][0])
+
+print('Threshold time frame: {} - {}'.format(raw_list[0]['start_time'],raw_list[0]['end_time']))
+start_ica =run_ica(eeg_data=raw_list[0]['data'],
+                         n_components=n_components_,
+                         method=method_,
+                         plot_filter_=plot_filter)
+print(ref_acc_list[0])
+
+threshold = calculate_threshold(start_ica,raw_list[0]['data'],ref_acc_list[0]['data'])
+analysis_index = 6
+print([raw_dict['start_time'] for raw_dict in raw_list])
+print('analysis event time: {} to {} index: {}'.format(raw_list[analysis_index]['start_time'],
+                                                       raw_list[analysis_index]['end_time'],
+                                                       analysis_index))
+analysis_annotation = raw_list[analysis_index]['data'].annotations
+periodic_raw_generator = split_raw_period(raw_list[analysis_index]['data'])
+periodic_ref_acc_generator = split_raw_period(ref_acc_list[analysis_index]['data'])
+periodic_hmd_acc_generator = split_raw_period(hmd_acc_list[analysis_index]['data'])
+
+ref_unmixed = None
+hmd_unmixed = None
+for raw, ref, hmd in zip(periodic_raw_generator,periodic_ref_acc_generator,periodic_hmd_acc_generator):
+    print('raw data: {}'.format(raw['data']))
+    ica = run_ica(eeg_data=raw['data'],
+                         n_components=n_components_,
+                         method=method_,
+                         plot_filter_=plot_filter)
+    ica_sources = ica.get_sources(raw['data'])
+    eeg_ref_unmixed, eeg_hmd_unmixed = full_correlation_check(ica,ica_sources,raw,ref,hmd,is_filtered=False,threshold_=threshold)
+    print('{}'.format(eeg_ref_unmixed))
+    if not ref_unmixed:
+        ref_unmixed=eeg_ref_unmixed
+
+    else:
+        #eeg_ref_unmixed.annotations.delete([0,1])
+        ref_unmixed.append(eeg_ref_unmixed)
+
+    if not hmd_unmixed:
+        hmd_unmixed = eeg_hmd_unmixed
+
+    else:
+        #eeg_hmd_unmixed.annotations.delete([0,1])
+        hmd_unmixed.append(eeg_hmd_unmixed)
+
+
+
+print('{}'.format(ref_unmixed.get_data()))
+
+ref_unmixed.set_annotations(analysis_annotation)
+ref_plot = ref_unmixed.plot(scalings={'eeg': 3e2},
+                  show=True,
+                  show_options=True,
+                  title='Unmixed periodical split reference data')
+ref_plot.savefig('.\\data\\plots\\unmixed_reference_acceleration_data.jpeg')
+hmd_unmixed.set_annotations(analysis_annotation)
+hmd_plot = hmd_unmixed.plot(scalings={'eeg': 3e2},
+                  show=True,
+                  show_options=True,
+                  title='Unmixed periodical split hmd data')
+hmd_plot.savefig('.\\data\\plots\\unmixed_hmd_acceleration_data.jpeg')
+
+'''
 for raw,ref,hmd in zip(raw_list,ref_acc_list,hmd_acc_list):
     # Run correlation check on normal data
-    ica = run_ica(eeg_data=eeg_referenced[0],
+    ica = run_ica(eeg_data=raw['data'],
                          n_components=n_components_,
                          method=method_,
                          plot_filter_=plot_filter)
     ica_sources = ica.get_sources(raw['data'])
     full_correlation_check(ica_=ica,sources_=ica_sources,raw_=raw,ref_=ref,hmd_=hmd, is_filtered=False)
-
+    
     #Filter raw objects
     ica_sources.filter(l_freq=split_lpass,
                          h_freq=split_hpass,
@@ -408,3 +512,4 @@ for raw,ref,hmd in zip(raw_list,ref_acc_list,hmd_acc_list):
                    fir_window='hamming')
     # Full correlation check on filtered data
     full_correlation_check(ica_=ica, sources_=ica_sources, raw_=raw, ref_=ref, hmd_=hmd, is_filtered=True)
+'''
